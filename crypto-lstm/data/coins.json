@@ -1,5 +1,0 @@
-[
-  { "id": 1, "symbol": "btc", "name": "Bitcoin", "market_cap": 900000000000, "price": 47000, "date": "2016-01-01" },
-  { "id": 2, "symbol": "eth", "name": "Ethereum", "market_cap": 400000000000, "price": 3200, "date": "2016-01-01" },
-  { "id": 3, "symbol": "xrp", "name": "XRP", "market_cap": 50000000000, "price": 0.85, "date": "2016-01-01" }
-]
