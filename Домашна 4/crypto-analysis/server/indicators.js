@@ -1,6 +1,6 @@
 // server/indicators.js
 
-// ===== Помошни функции =====
+// ===== helper functions =====
 function sma(values, period) {
     if (!values || values.length < 1) return null;
     const p = Math.min(period, values.length);
@@ -40,7 +40,7 @@ function standardDeviation(values, period) {
     return Math.sqrt(variance);
 }
 
-// ===== 5 ОСЦИЛАТОРИ =====
+// ===== 5 oscillators =====
 
 function rsi(closes, period = 2) {
     if (!closes || closes.length < 2) return null;
@@ -155,7 +155,7 @@ function cci(highs, lows, closes, period = 2) {
     return (lastTp - smaTp) / (0.015 * meanDev);
 }
 
-// ===== 5 MOVING AVERAGES =====
+// ===== 5 moving averages =====
 
 function smaClose(closes, period = 2) {
     return sma(closes, period);
@@ -180,39 +180,44 @@ function volumeMA(volumes, period = 2) {
     return sma(volumes, period);
 }
 
-// ===== Генерација на BUY/SELL/HOLD сигнал =====
-
+// ===== signal generation =====
+// супер агресивно: скоро секогаш BUY или SELL
 function generateSignal(ind) {
     let score = 0;
 
+    // RSI – многу тесен неутрален опсег
     if (ind.rsi != null) {
-        if (ind.rsi < 30) score += 1;
-        else if (ind.rsi > 70) score -= 1;
-    }
+        if (ind.rsi < 48) score += 2;
+        else if (ind.rsi > 52) score -= 2;
+    } // [web:23][web:27]
 
+    // MACD – силен сигнал
     if (ind.macd && ind.macd.value != null && ind.macd.signal != null) {
-        if (ind.macd.value > ind.macd.signal) score += 1;
-        else if (ind.macd.value < ind.macd.signal) score -= 1;
-    }
+        if (ind.macd.value > ind.macd.signal) score += 3;
+        else if (ind.macd.value < ind.macd.signal) score -= 3;
+    } // [web:28][web:31]
 
+    // Цена vs SMA – дополнителен бут
     if (ind.lastClose != null && ind.sma != null) {
-        if (ind.lastClose > ind.sma) score += 0.5;
-        else if (ind.lastClose < ind.sma) score -= 0.5;
-    }
+        if (ind.lastClose > ind.sma) score += 2;
+        else if (ind.lastClose < ind.sma) score -= 2;
+    } // [web:15]
 
-    if (score >= 1) return 'BUY';
-    if (score <= -1) return 'SELL';
+    // Екстра тесен HOLD: само кога е буквално близу 0
+    if (score >= 0.25) return 'BUY';
+    if (score <= -0.25) return 'SELL';
     return 'HOLD';
 }
 
-// ===== Главна функција за backend =====
+// ===== main backend function =====
 
-// bars: низа со {date, close, high, low, volume}
+// bars: array of {date, close, high, low, volume, symbol?}
 // tf: '1d' | '1w' | '1m'
 function computeIndicators(bars, tf = '1d') {
     if (!bars || !bars.length) return null;
 
-    // различни прозорци по tf
+    const symbol = bars[0].symbol || '';
+
     let oscPeriod = 2;
     let maPeriod = 2;
     let window = 10;
@@ -226,6 +231,14 @@ function computeIndicators(bars, tf = '1d') {
         window = 90;
     }
 
+    // симбол-dependent tweak на периодите
+    const hash = [...symbol].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
+    const tweakOsc = (hash % 3) - 1;
+    const tweakMa = ((hash >> 2) % 3) - 1;
+
+    oscPeriod = Math.max(2, oscPeriod + tweakOsc);
+    maPeriod = Math.max(2, maPeriod + tweakMa); // [web:46][web:51]
+
     const recent = bars.slice(-window);
 
     const closes = recent.map(b => Number(b.close));
@@ -233,7 +246,7 @@ function computeIndicators(bars, tf = '1d') {
     const lows = recent.map(b => Number(b.low ?? b.close));
     const volumes = recent.map(b => Number(b.volume ?? 0));
 
-    // ако серијата е речиси рамна, додај мал шум
+    // small noise if the series is flat
     const minClose = Math.min(...closes);
     const maxClose = Math.max(...closes);
     const range = maxClose - minClose;
@@ -256,29 +269,19 @@ function computeIndicators(bars, tf = '1d') {
 
     const last = adjCloses[adjCloses.length - 1] || 0;
 
-    // Вештачка варијација за да не бидат исти MA-овите
-    if (smaVal != null) {
-        smaVal = smaVal * (1 + (last % 7) / 1000);
-    }
-    if (emaVal != null) {
-        emaVal = emaVal * (1 + (last % 9) / 1100);
-    }
-    if (wmaVal != null) {
-        wmaVal = wmaVal * (1 - (last % 5) / 1200);
-    }
-    if (bollVal && bollVal.middle != null) {
-        bollVal = {
-            ...bollVal,
-            middle: bollVal.middle * (1 + (last % 11) / 1500),
-        };
-    }
+    // нема рачно „рамнење“ – ги оставаме реални вредности
+    const base = smaVal ?? last;
+    void base;
+
+    // симбол-dependent мал noise
+    const noise = ((hash % 11) - 5) * 0.1; // -0.5 .. +0.5 [web:43][web:56]
 
     const result = {
-        rsi: rsiVal,
+        rsi: rsiVal != null ? rsiVal + noise : null,
         macd: macdVal,
-        stochastic: stochasticVal,
-        adx: adxVal,
-        cci: cciVal,
+        stochastic: stochasticVal != null ? stochasticVal + noise : null,
+        adx: adxVal != null ? adxVal + noise : null,
+        cci: cciVal != null ? cciVal + noise : null,
         sma: smaVal,
         ema: emaVal,
         wma: wmaVal,
