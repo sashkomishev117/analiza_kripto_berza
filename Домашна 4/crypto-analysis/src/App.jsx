@@ -63,7 +63,7 @@ export default function App() {
   const [coins, setCoins] = useState([])
 
   useEffect(() => {
-    fetch('http://localhost:4000/api/coins')
+    fetch('/api/coins')
       .then(r => r.json())
       .then(setCoins)
       .catch(() => setCoins([]))
