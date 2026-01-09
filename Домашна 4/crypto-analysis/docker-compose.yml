@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  coins:
+    build: ./coins-service
+    ports:
+      - "8081:8081"
+    networks:
+      - app-network
+    volumes:
+      - crypto_data:/app/data
+    environment:
+      - DB_PATH=/app/data/crypto.db
+
+  analytics:
+    build: ./analytics-service
+    ports:
+      - "8082:8082"
+    networks:
+      - app-network
+    volumes:
+      - crypto_data:/app/data
+    depends_on:
+      - coins
+
+  frontend:
+    build: .
+    ports:
+      - "3000:80"
+    networks:
+      - app-network
+    depends_on:
+      - coins
+      - analytics
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  crypto_data:
