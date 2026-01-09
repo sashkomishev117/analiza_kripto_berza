@@ -1,0 +1,48 @@
+stages:
+  - build
+  - deploy
+
+variables:
+  DOCKER_REGISTRY: $ACR_REGISTRY
+  # Add ACR_USERNAME and ACR_PASSWORD in GitLab Settings -> CI/CD -> Variables
+
+services:
+  - docker:dind
+
+before_script:
+  - docker login $DOCKER_REGISTRY -u $ACR_USERNAME -p $ACR_PASSWORD
+
+build_images:
+  stage: build
+  image: docker:latest
+  script:
+    # Build and Push Frontend
+    - docker build -t $DOCKER_REGISTRY/frontend:latest ./crypto-analysis/src
+    - docker push $DOCKER_REGISTRY/frontend:latest
+
+    # Build and Push Server
+    - docker build -t $DOCKER_REGISTRY/server:latest ./crypto-analysis/server
+    - docker push $DOCKER_REGISTRY/server:latest
+
+    # Build and Push Microservices
+    - docker build -t $DOCKER_REGISTRY/analytics:latest ./crypto-analysis/analytics-service
+    - docker push $DOCKER_REGISTRY/analytics:latest
+
+    - docker build -t $DOCKER_REGISTRY/coins:latest ./crypto-analysis/coins-service
+    - docker push $DOCKER_REGISTRY/coins:latest
+
+    # Build and Push Nginx Gateway
+    # UPDATED: Path now points inside crypto-analysis
+    - docker build -t $DOCKER_REGISTRY/nginx:latest ./crypto-analysis/nginx
+    - docker push $DOCKER_REGISTRY/nginx:latest
+
+deploy_to_azure:
+  stage: deploy
+  image: mcr.microsoft.com/azure-cli
+  script:
+    - az login --service-principal -u $AZURE_APP_ID -p $AZURE_PASSWORD --tenant $AZURE_TENANT_ID
+    # UPDATED: File path now includes crypto-analysis/
+    - az webapp config container set --name $APP_NAME --resource-group $RESOURCE_GROUP --multicontainer-config-type compose --multicontainer-config-file crypto-analysis/docker-compose.prod.yml
+  only:
+    - main
+    - master

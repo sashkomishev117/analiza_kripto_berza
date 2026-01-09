@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  nginx:
+    image: ${ACR_REGISTRY}/nginx:latest
+    ports:
+      - "80:80"
+    depends_on:
+      - frontend
+      - server
+
+  frontend:
+    image: ${ACR_REGISTRY}/frontend:latest
+    # Ensure your Frontend Dockerfile builds the static files and serves them (e.g., using Nginx internally or 'serve')
+
+  server:
+    image: ${ACR_REGISTRY}/server:latest
+    environment:
+      - MONGO_URL=mongodb://mongo:27017/crypto # Update with real DB credentials if using Azure CosmosDB
+      - PORT=5000
+
+  analytics-service:
+    image: ${ACR_REGISTRY}/analytics:latest
+
+  coins-service:
+    image: ${ACR_REGISTRY}/coins:latest
+
+  # If you are using a database container, keep it here.
+  # For production, it is safer to use Azure CosmosDB or a managed database,
+  # but a container works for homework.
+  mongo:
+    image: mongo:4.4
+    restart: always
