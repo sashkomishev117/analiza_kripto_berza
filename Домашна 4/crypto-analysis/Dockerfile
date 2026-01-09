@@ -1,13 +1,20 @@
 FROM node:20-alpine AS build
 WORKDIR /app
-COPY package*.json ./
-RUN npm ci
-COPY . .
-RUN npm run build
-ENV VITE_API_URL=http://coins:8081
 
-FROM nginx:alpine
-COPY --from=build /app/dist /usr/share/nginx/html
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-EXPOSE 80
-CMD ["nginx", "-g", "daemon off;"]
+# Build frontend
+COPY src/package*.json ./src/
+WORKDIR /app/src
+RUN npm ci
+COPY src/ .
+RUN npm run build
+
+# Prepare server
+FROM node:20-alpine
+WORKDIR /app
+COPY server/package*.json ./
+RUN npm ci --only=production
+COPY server/ .
+COPY --from=build /app/src/dist/prototype-das ./dist/prototype-das
+
+EXPOSE 4000
+CMD ["node", "index.js"]

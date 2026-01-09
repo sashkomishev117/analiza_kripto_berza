@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const cors = require('cors');
-const db = require('./db');
+const db = require('./db'); // Assumes db.js exports a 'pg' Pool
 const {
   marketUpdater,
   computeIndicators,
@@ -17,38 +17,46 @@ app.use(express.json());
 
 // ===================== PROMENI 24h / 7d =====================
 async function recomputeAllChanges() {
-  const coins = db.prepare(`SELECT DISTINCT coin_id FROM ohlcv`).all();
-  const selectCandles = db.prepare(`
-    SELECT ts, close
-    FROM ohlcv_candles
-    WHERE coin_id = ?
-    ORDER BY ts DESC
-    LIMIT 8
-  `);
-  const updateStmt = db.prepare(`
-    UPDATE ohlcv
-    SET change_24h = ?, change_7d = ?
-    WHERE coin_id = ?
-  `);
+  try {
+    // Get all coins
+    const { rows: coins } = await db.query(`SELECT DISTINCT coin_id FROM ohlcv`);
 
-  for (const c of coins) {
-    const rows = selectCandles.all(c.coin_id);
-    if (rows.length < 2) continue;
+    const selectCandlesSql = `
+      SELECT ts, close
+      FROM ohlcv_candles
+      WHERE coin_id = $1
+      ORDER BY ts DESC
+      LIMIT 8
+    `;
 
-    const today = Number(rows[0].close);
-    const yesterday = Number(rows[1].close);
+    const updateSql = `
+      UPDATE ohlcv
+      SET change_24h = $1, change_7d = $2
+      WHERE coin_id = $3
+    `;
 
-    let change24 = yesterday > 0 ? ((today - yesterday) / yesterday) * 100 : null;
+    for (const c of coins) {
+      const { rows } = await db.query(selectCandlesSql, [c.coin_id]);
 
-    let change7 = null;
-    if (rows.length >= 7) {
-      const sevenAgo = Number(rows[6].close);
-      change7 = sevenAgo > 0 ? ((today - sevenAgo) / sevenAgo) * 100 : null;
+      if (rows.length < 2) continue;
+
+      const today = Number(rows[0].close);
+      const yesterday = Number(rows[1].close);
+
+      let change24 = yesterday > 0 ? ((today - yesterday) / yesterday) * 100 : null;
+
+      let change7 = null;
+      if (rows.length >= 7) {
+        const sevenAgo = Number(rows[6].close);
+        change7 = sevenAgo > 0 ? ((today - sevenAgo) / sevenAgo) * 100 : null;
+      }
+
+      await db.query(updateSql, [change24, change7, c.coin_id]);
     }
-
-    updateStmt.run(change24, change7, c.coin_id);
+    console.log(`Recomputed changes for ${coins.length} coins`);
+  } catch (err) {
+    console.error('Error recomputing changes:', err);
   }
-  console.log(`Recomputed changes for ${coins.length} coins`);
 }
 
 // ===================== API ROUTES =====================
@@ -77,9 +85,9 @@ app.post('/api/recompute-changes', async (req, res) => {
 });
 
 // Листа на сите coins
-app.get('/api/coins', (req, res) => {
+app.get('/api/coins', async (req, res) => {
   try {
-    const rows = db.prepare(`
+    const { rows } = await db.query(`
       SELECT coin_id as id,
              symbol,
              name,
@@ -89,8 +97,8 @@ app.get('/api/coins', (req, res) => {
              change_24h,
              change_7d
       FROM ohlcv
-      GROUP BY coin_id
-    `).all();
+      GROUP BY coin_id, symbol, name, current_price, market_cap_x, total_volume, change_24h, change_7d
+    `);
     res.json(rows);
   } catch (e) {
     console.error(e);
@@ -99,92 +107,126 @@ app.get('/api/coins', (req, res) => {
 });
 
 // Еден coin
-app.get('/api/coins/:id', (req, res) => {
-  const row = db.prepare(`SELECT * FROM ohlcv WHERE coin_id = ? LIMIT 1`).get(req.params.id);
-  if (!row) return res.status(404).json({ error: 'Not found' });
-  res.json(row);
+app.get('/api/coins/:id', async (req, res) => {
+  try {
+    const { rows } = await db.query(`SELECT * FROM ohlcv WHERE coin_id = $1 LIMIT 1`, [req.params.id]);
+    if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
+    res.json(rows[0]);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 // Analytics за еден coin
-app.get('/api/analytics/:id', (req, res) => {
-  const id = req.params.id;
-  const tf = req.query.tf || '1d';
-  const limit = tfToLimit(tf);
+app.get('/api/analytics/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    const tf = req.query.tf || '1d';
+    const limit = tfToLimit(tf);
 
-  let bars = db.prepare(`
-    SELECT ts AS date, open, high, low, close, volume
-    FROM ohlcv_candles
-    WHERE coin_id = ?
-    ORDER BY ts DESC
-    LIMIT ?
-  `).all(id, limit).reverse();
+    const { rows } = await db.query(`
+      SELECT ts AS date, open, high, low, close, volume
+      FROM ohlcv_candles
+      WHERE coin_id = $1
+      ORDER BY ts DESC
+      LIMIT $2
+    `, [id, limit]);
 
-  if (!bars.length) bars = makeFakeBars(id, tf);
+    let bars = rows.reverse();
 
-  const indicators = computeIndicators(bars, tf);
-  res.json({ id, timeFrame: tf, indicators });
+    if (!bars.length) bars = makeFakeBars(id, tf);
+
+    const indicators = computeIndicators(bars, tf);
+    res.json({ id, timeFrame: tf, indicators });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Analytics error' });
+  }
 });
 
 // Batch analytics
-app.get('/api/analytics-batch', (req, res) => {
-  const idsParam = req.query.ids;
-  const tf = req.query.tf || '1d';
-  if (!idsParam) return res.status(400).json({ error: 'ids query param required' });
+app.get('/api/analytics-batch', async (req, res) => {
+  try {
+    const idsParam = req.query.ids;
+    const tf = req.query.tf || '1d';
+    if (!idsParam) return res.status(400).json({ error: 'ids query param required' });
 
-  const ids = idsParam.split(',').map(s => s.trim()).filter(Boolean);
-  const limit = tfToLimit(tf);
+    const ids = idsParam.split(',').map(s => s.trim()).filter(Boolean);
+    const limit = tfToLimit(tf);
 
-  const stmt = db.prepare(`
-    SELECT coin_id, ts AS date, open, high, low, close, volume
-    FROM ohlcv_candles
-    WHERE coin_id = ?
-    ORDER BY ts DESC
-    LIMIT ?
-  `);
+    const sql = `
+      SELECT coin_id, ts AS date, open, high, low, close, volume
+      FROM ohlcv_candles
+      WHERE coin_id = $1
+      ORDER BY ts DESC
+      LIMIT $2
+    `;
 
-  const result = {};
-  for (const id of ids) {
-    let bars = stmt.all(id, limit).reverse();
-    if (!bars.length) bars = makeFakeBars(id, tf);
-    result[id] = { timeFrame: tf, indicators: computeIndicators(bars, tf) };
+    const result = {};
+    for (const id of ids) {
+      const { rows } = await db.query(sql, [id, limit]);
+      let bars = rows.reverse();
+
+      if (!bars.length) bars = makeFakeBars(id, tf);
+
+      result[id] = { timeFrame: tf, indicators: computeIndicators(bars, tf) };
+    }
+
+    res.json(result);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Batch analytics error' });
   }
-
-  res.json(result);
 });
 
 // Price series за график
-app.get('/api/price-series/:id', (req, res) => {
-  const start = Date.now();
-  const id = req.params.id;
-  const tf = req.query.tf || '1d';
-  const limit = tfToLimit(tf);
+app.get('/api/price-series/:id', async (req, res) => {
+  try {
+    const start = Date.now();
+    const id = req.params.id;
+    const tf = req.query.tf || '1d';
+    const limit = tfToLimit(tf);
 
-  let rows = db.prepare(`
-    SELECT ts AS date, close
-    FROM ohlcv_candles
-    WHERE coin_id = ?
-    ORDER BY ts DESC
-    LIMIT ?
-  `).all(id, limit).reverse();
+    const { rows } = await db.query(`
+      SELECT ts AS date, close
+      FROM ohlcv_candles
+      WHERE coin_id = $1
+      ORDER BY ts DESC
+      LIMIT $2
+    `, [id, limit]);
 
-  if (!rows.length) rows = makeFakeBars(id, tf).map(b => ({ date: b.date, close: b.close }));
+    let data = rows.reverse();
 
-  console.log('price-series', id, tf, 'took', Date.now() - start, 'ms');
-  res.json(rows);
+    if (!data.length) {
+      data = makeFakeBars(id, tf).map(b => ({ date: b.date, close: b.close }));
+    }
+
+    console.log('price-series', id, tf, 'took', Date.now() - start, 'ms');
+    res.json(data);
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Price series error' });
+  }
 });
 
-// EXPORT CSV (опционално)
+// EXPORT CSV (Filesystem based - no DB changes needed)
 const CSV_PATH = path.join(__dirname, '..', 'data', 'top_1000_full.csv');
 function parseCSV() {
-  const raw = fs.readFileSync(CSV_PATH, 'utf8');
-  const lines = raw.trim().split('\n');
-  const headers = lines[0].split(',');
-  return lines.slice(1).map(line => {
-    const values = line.split(',');
-    const obj = {};
-    headers.forEach((h, i) => (obj[h] = values[i]));
-    return obj;
-  });
+  try {
+    const raw = fs.readFileSync(CSV_PATH, 'utf8');
+    const lines = raw.trim().split('\n');
+    const headers = lines[0].split(',');
+    return lines.slice(1).map(line => {
+      const values = line.split(',');
+      const obj = {};
+      headers.forEach((h, i) => (obj[h] = values[i]));
+      return obj;
+    });
+  } catch (e) {
+    console.error('CSV read error:', e);
+    return [];
+  }
 }
 
 app.get('/api/export/:id', (req, res) => {

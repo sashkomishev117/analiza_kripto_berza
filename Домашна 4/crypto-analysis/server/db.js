@@ -1,12 +1,16 @@
-const path = require('path');
-const Database = require('better-sqlite3');
+const { Pool } = require('pg');
 
-const DB_PATH = path.join(__dirname, '..', 'data', 'crypto.db');
-const db = new Database(DB_PATH);
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    ssl: {
+        rejectUnauthorized: false
+    }
+});
 
-db.exec(`
+// Create tables
+pool.query(`
   CREATE TABLE IF NOT EXISTS ohlcv (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    id SERIAL PRIMARY KEY,
     coin_id TEXT UNIQUE,
     symbol TEXT,
     name TEXT,
@@ -19,6 +23,18 @@ db.exec(`
     change_24h REAL,
     change_7d REAL
   );
-`);
 
-module.exports = db;
+  CREATE TABLE IF NOT EXISTS ohlcv_candles (
+    id SERIAL PRIMARY KEY,
+    coin_id TEXT,
+    ts BIGINT,
+    open REAL,
+    high REAL,
+    low REAL,
+    close REAL,
+    volume REAL,
+    UNIQUE(coin_id, ts)
+  );
+`).catch(console.error);
+
+module.exports = pool;
