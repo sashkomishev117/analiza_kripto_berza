@@ -44,4 +44,5 @@ deploy_to_azure:
     - az webapp config container set --name $APP_NAME --resource-group $RESOURCE_GROUP --multicontainer-config-type compose --multicontainer-config-file "Домашна 4/crypto-analysis/docker-compose.prod.yml"
   only:
     - main
-    - master
+    - master 
+ 
